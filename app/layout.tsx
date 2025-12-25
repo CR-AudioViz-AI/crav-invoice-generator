@@ -1,5 +1,5 @@
 import Script from 'next/script';
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
 
@@ -10,6 +10,15 @@ export const metadata: Metadata = {
   description: 'Professional invoice generator with templates, tax calculations, and PDF export',
 }
 
+// Mobile viewport configuration
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  userScalable: true,
+  viewportFit: 'cover',
+}
+
 export default function RootLayout({
   children,
 }: {
@@ -17,11 +26,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
-        <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
+      <head>
+        {/* Prevent iOS zoom on input focus */}
+        <meta name="format-detection" content="telephone=no" />
+      </head>
+      <body className={`${inter.className} min-h-screen min-h-[100dvh]`}>
+        <div className="min-h-screen min-h-[100dvh] bg-gradient-to-br from-gray-50 to-gray-100">
           {children}
         </div>
-              {/* Javari AI Assistant */}
+        {/* Javari AI Assistant */}
         <Script src="https://javariai.com/embed.js" strategy="lazyOnload" />
       </body>
     </html>

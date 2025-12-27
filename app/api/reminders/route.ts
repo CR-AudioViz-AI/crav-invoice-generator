@@ -1,6 +1,6 @@
 /**
  * INVOICE GENERATOR PRO - PAYMENT REMINDERS API
- * Automated payment reminder emails
+ * Automated payment reminders with smart scheduling
  * 
  * CR AudioViz AI - Fortune 50 Quality Standards
  * @version 2.0.0
@@ -9,6 +9,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { format, differenceInDays, parseISO, addDays } from 'date-fns';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -19,200 +20,133 @@ const supabase = createClient(
 // TYPES
 // ============================================================================
 
-interface ReminderSettings {
+interface ReminderSchedule {
   id?: string;
   user_id: string;
-  invoice_id?: string; // null = default settings for all invoices
-  reminder_days: number[]; // e.g., [7, 3, 1, 0, -3, -7] (before/after due)
-  email_template: 'friendly' | 'professional' | 'urgent' | 'custom';
-  custom_subject?: string;
-  custom_body?: string;
-  include_invoice_link: boolean;
-  include_payment_link: boolean;
-  is_active: boolean;
+  name: string;
+  is_default: boolean;
+  reminders: ReminderConfig[];
+  created_at?: string;
 }
 
-interface ScheduledReminder {
+interface ReminderConfig {
+  days_offset: number; // Negative = before due, Positive = after due
+  subject_template: string;
+  body_template: string;
+  enabled: boolean;
+}
+
+interface SentReminder {
   id?: string;
   invoice_id: string;
-  reminder_date: string;
-  reminder_type: 'before_due' | 'on_due' | 'overdue';
-  days_offset: number;
-  status: 'pending' | 'sent' | 'failed' | 'cancelled';
-  sent_at?: string;
-  error_message?: string;
+  reminder_type: string;
+  sent_at: string;
+  recipient_email: string;
+  status: 'sent' | 'failed' | 'opened' | 'clicked';
+  opened_at?: string;
 }
 
-// ============================================================================
-// EMAIL TEMPLATES
-// ============================================================================
+// Default reminder templates
+const DEFAULT_REMINDERS: ReminderConfig[] = [
+  {
+    days_offset: -7,
+    subject_template: 'Upcoming Invoice Due: {{invoice_number}}',
+    body_template: `Hi {{client_name}},
 
-const EMAIL_TEMPLATES = {
-  friendly: {
-    before: {
-      subject: 'Friendly reminder: Invoice {{invoice_number}} due soon',
-      body: `Hi {{client_name}},
+This is a friendly reminder that Invoice {{invoice_number}} for {{total}} is due on {{due_date}}.
 
-Just a friendly reminder that invoice #{{invoice_number}} for {{total}} is due on {{due_date}}.
+You can view and pay your invoice here: {{invoice_link}}
 
-If you've already sent payment, please disregard this message. If not, we'd appreciate payment at your earliest convenience.
-
-{{payment_link}}
-
-Thanks for your business!
+Thank you for your business!
 
 Best regards,
-{{from_name}}`
-    },
-    on_due: {
-      subject: 'Invoice {{invoice_number}} is due today',
-      body: `Hi {{client_name}},
-
-This is a reminder that invoice #{{invoice_number}} for {{total}} is due today ({{due_date}}).
-
-{{payment_link}}
-
-Please let us know if you have any questions.
-
-Best regards,
-{{from_name}}`
-    },
-    overdue: {
-      subject: 'Payment reminder: Invoice {{invoice_number}} is overdue',
-      body: `Hi {{client_name}},
-
-We noticed that invoice #{{invoice_number}} for {{total}} was due on {{due_date}} and remains unpaid.
-
-{{payment_link}}
-
-If you've already sent payment, thank you! Otherwise, please let us know if there are any issues we can help resolve.
-
-Best regards,
-{{from_name}}`
-    }
+{{from_name}}`,
+    enabled: true,
   },
-  professional: {
-    before: {
-      subject: 'Payment Reminder - Invoice {{invoice_number}}',
-      body: `Dear {{client_name}},
+  {
+    days_offset: -1,
+    subject_template: 'Invoice Due Tomorrow: {{invoice_number}}',
+    body_template: `Hi {{client_name}},
 
-This is a courtesy reminder that Invoice #{{invoice_number}} in the amount of {{total}} will be due on {{due_date}}.
+Just a quick reminder that Invoice {{invoice_number}} for {{total}} is due tomorrow ({{due_date}}).
 
-{{payment_link}}
+Pay now: {{invoice_link}}
 
-If payment has already been submitted, please disregard this notice.
+Thank you!
 
-Regards,
-{{from_name}}
-{{from_email}}`
-    },
-    on_due: {
-      subject: 'Invoice {{invoice_number}} - Payment Due Today',
-      body: `Dear {{client_name}},
-
-Please be advised that Invoice #{{invoice_number}} in the amount of {{total}} is due today.
-
-{{payment_link}}
-
-Thank you for your prompt attention to this matter.
-
-Regards,
-{{from_name}}`
-    },
-    overdue: {
-      subject: 'Overdue Notice - Invoice {{invoice_number}}',
-      body: `Dear {{client_name}},
-
-Our records indicate that Invoice #{{invoice_number}} in the amount of {{total}} was due on {{due_date}} and remains outstanding.
-
-{{payment_link}}
-
-Please remit payment at your earliest convenience. If you have questions regarding this invoice, please contact us.
-
-Regards,
-{{from_name}}`
-    }
+Best regards,
+{{from_name}}`,
+    enabled: true,
   },
-  urgent: {
-    before: {
-      subject: '⏰ Reminder: Invoice {{invoice_number}} due in {{days_until}} days',
-      body: `Hi {{client_name}},
+  {
+    days_offset: 0,
+    subject_template: 'Invoice Due Today: {{invoice_number}}',
+    body_template: `Hi {{client_name}},
 
-Quick reminder - Invoice #{{invoice_number}} ({{total}}) is due in {{days_until}} days on {{due_date}}.
+Invoice {{invoice_number}} for {{total}} is due today.
 
-{{payment_link}}
+Please make your payment at your earliest convenience: {{invoice_link}}
 
-Thanks!
-{{from_name}}`
-    },
-    on_due: {
-      subject: '🔔 Invoice {{invoice_number}} Due TODAY - {{total}}',
-      body: `Hi {{client_name}},
+Thank you for your prompt attention!
 
-Invoice #{{invoice_number}} for {{total}} is due TODAY.
+Best regards,
+{{from_name}}`,
+    enabled: true,
+  },
+  {
+    days_offset: 3,
+    subject_template: 'Payment Overdue: Invoice {{invoice_number}}',
+    body_template: `Hi {{client_name}},
 
-{{payment_link}}
+This is a reminder that Invoice {{invoice_number}} for {{total}} was due on {{due_date}} and is now 3 days overdue.
 
-Please process payment today to avoid late fees.
+Please make your payment as soon as possible: {{invoice_link}}
 
-{{from_name}}`
-    },
-    overdue: {
-      subject: '⚠️ OVERDUE: Invoice {{invoice_number}} - {{days_overdue}} days past due',
-      body: `Hi {{client_name}},
+If you've already paid, please disregard this message.
 
-Invoice #{{invoice_number}} for {{total}} is now {{days_overdue}} days overdue.
+Thank you,
+{{from_name}}`,
+    enabled: true,
+  },
+  {
+    days_offset: 7,
+    subject_template: 'Second Notice: Invoice {{invoice_number}} Overdue',
+    body_template: `Hi {{client_name}},
 
-Original due date: {{due_date}}
+This is our second notice regarding Invoice {{invoice_number}} for {{total}}, which was due on {{due_date}}.
 
-{{payment_link}}
+The invoice is now 7 days overdue. Please make your payment immediately to avoid any late fees.
 
-Please process payment immediately to bring your account current.
+Pay now: {{invoice_link}}
 
-{{from_name}}`
-    }
-  }
-};
+If you have any questions or concerns about this invoice, please contact us.
 
-// ============================================================================
-// CREATE/UPDATE REMINDER SETTINGS
-// ============================================================================
+Thank you,
+{{from_name}}`,
+    enabled: true,
+  },
+  {
+    days_offset: 14,
+    subject_template: 'Final Notice: Invoice {{invoice_number}} - Immediate Payment Required',
+    body_template: `Hi {{client_name}},
 
-export async function POST(request: NextRequest) {
-  try {
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+FINAL NOTICE
 
-    const token = authHeader.substring(7);
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-    
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-    }
+Invoice {{invoice_number}} for {{total}} is now 14 days overdue.
 
-    const { searchParams } = new URL(request.url);
-    const action = searchParams.get('action');
+This is our final reminder before we take additional collection measures. Please make your payment immediately.
 
-    if (action === 'schedule') {
-      return await scheduleReminders(request, user.id);
-    } else if (action === 'send') {
-      return await sendReminder(request, user.id);
-    } else if (action === 'settings') {
-      return await saveReminderSettings(request, user.id);
-    }
+Pay now: {{invoice_link}}
 
-    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+If there are any issues preventing payment, please contact us immediately to discuss.
 
-  } catch (error: any) {
-    console.error('Reminder error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-}
+{{from_name}}`,
+    enabled: true,
+  },
+];
 
 // ============================================================================
-// GET REMINDER SETTINGS & SCHEDULED REMINDERS
+// GET - List reminder schedules and sent reminders
 // ============================================================================
 
 export async function GET(request: NextRequest) {
@@ -230,78 +164,182 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
+    const type = searchParams.get('type') || 'schedules';
     const invoiceId = searchParams.get('invoice_id');
-    const type = searchParams.get('type') || 'settings';
 
-    if (type === 'scheduled') {
-      // Get scheduled reminders
-      let query = supabase
-        .from('scheduled_reminders')
-        .select(`
-          *,
-          invoice:invoices(*)
-        `)
-        .order('reminder_date', { ascending: true });
+    if (type === 'sent' && invoiceId) {
+      // Get sent reminders for a specific invoice
+      const { data, error } = await supabase
+        .from('sent_reminders')
+        .select('*')
+        .eq('invoice_id', invoiceId)
+        .order('sent_at', { ascending: false });
 
-      if (invoiceId) {
-        query = query.eq('invoice_id', invoiceId);
-      }
-
-      const { data, error } = await query;
       if (error) throw error;
 
-      return NextResponse.json({ scheduled_reminders: data });
+      return NextResponse.json({ sent_reminders: data || [] });
     }
 
-    // Get reminder settings
+    // Get reminder schedules
     const { data, error } = await supabase
-      .from('reminder_settings')
+      .from('reminder_schedules')
       .select('*')
       .eq('user_id', user.id)
-      .single();
+      .order('created_at', { ascending: false });
 
-    if (error && error.code !== 'PGRST116') throw error;
+    if (error) throw error;
 
-    // Return default settings if none exist
-    const settings = data || {
-      reminder_days: [7, 3, 1, 0, -3, -7],
-      email_template: 'friendly',
-      include_invoice_link: true,
-      include_payment_link: true,
-      is_active: true,
-    };
+    // If no schedules exist, return default
+    if (!data || data.length === 0) {
+      return NextResponse.json({
+        schedules: [{
+          id: 'default',
+          name: 'Default Schedule',
+          is_default: true,
+          reminders: DEFAULT_REMINDERS,
+        }],
+        is_using_default: true,
+      });
+    }
 
-    return NextResponse.json({ 
-      settings,
-      templates: Object.keys(EMAIL_TEMPLATES)
-    });
+    return NextResponse.json({ schedules: data });
 
   } catch (error: any) {
-    console.error('Get reminders error:', error);
+    console.error('Error fetching reminders:', error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
 
 // ============================================================================
-// HELPER: SAVE REMINDER SETTINGS
+// POST - Create reminder schedule or send manual reminder
 // ============================================================================
 
-async function saveReminderSettings(request: NextRequest, userId: string) {
-  const body = await request.json();
-  
+export async function POST(request: NextRequest) {
+  try {
+    const authHeader = request.headers.get('authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const token = authHeader.substring(7);
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { action } = body;
+
+    if (action === 'send_reminder') {
+      return await sendManualReminder(user.id, body);
+    }
+
+    if (action === 'create_schedule') {
+      return await createReminderSchedule(user.id, body);
+    }
+
+    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+
+  } catch (error: any) {
+    console.error('Error in reminder action:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+}
+
+// ============================================================================
+// SEND MANUAL REMINDER
+// ============================================================================
+
+async function sendManualReminder(userId: string, body: any) {
+  const { invoice_id, reminder_type, custom_message } = body;
+
+  if (!invoice_id) {
+    return NextResponse.json({ error: 'Invoice ID required' }, { status: 400 });
+  }
+
+  // Get invoice details
+  const { data: invoice, error: invoiceError } = await supabase
+    .from('invoices')
+    .select('*')
+    .eq('id', invoice_id)
+    .eq('user_id', userId)
+    .single();
+
+  if (invoiceError || !invoice) {
+    return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
+  }
+
+  // Find the appropriate reminder template
+  const reminderConfig = DEFAULT_REMINDERS.find(r => {
+    if (reminder_type === 'upcoming') return r.days_offset === -7;
+    if (reminder_type === 'due_tomorrow') return r.days_offset === -1;
+    if (reminder_type === 'due_today') return r.days_offset === 0;
+    if (reminder_type === 'overdue') return r.days_offset === 3;
+    if (reminder_type === 'final') return r.days_offset === 14;
+    return false;
+  }) || DEFAULT_REMINDERS[0];
+
+  // Process template
+  const subject = processTemplate(reminderConfig.subject_template, invoice);
+  const body_content = custom_message || processTemplate(reminderConfig.body_template, invoice);
+
+  // Queue email
+  const { error: queueError } = await supabase.from('email_queue').insert({
+    type: 'reminder',
+    recipient_email: invoice.to_email,
+    subject,
+    body: body_content,
+    invoice_id,
+    scheduled_for: new Date().toISOString(),
+    status: 'pending',
+  });
+
+  if (queueError) throw queueError;
+
+  // Log sent reminder
+  await supabase.from('sent_reminders').insert({
+    invoice_id,
+    reminder_type,
+    sent_at: new Date().toISOString(),
+    recipient_email: invoice.to_email,
+    status: 'sent',
+  });
+
+  return NextResponse.json({
+    success: true,
+    message: `Reminder sent to ${invoice.to_email}`,
+  });
+}
+
+// ============================================================================
+// CREATE REMINDER SCHEDULE
+// ============================================================================
+
+async function createReminderSchedule(userId: string, body: any) {
+  const { name, reminders, is_default } = body;
+
+  if (!name || !reminders) {
+    return NextResponse.json({
+      error: 'Name and reminders array required'
+    }, { status: 400 });
+  }
+
+  // If setting as default, unset other defaults
+  if (is_default) {
+    await supabase
+      .from('reminder_schedules')
+      .update({ is_default: false })
+      .eq('user_id', userId);
+  }
+
   const { data, error } = await supabase
-    .from('reminder_settings')
-    .upsert({
+    .from('reminder_schedules')
+    .insert({
       user_id: userId,
-      reminder_days: body.reminder_days || [7, 3, 1, 0, -3, -7],
-      email_template: body.email_template || 'friendly',
-      custom_subject: body.custom_subject,
-      custom_body: body.custom_body,
-      include_invoice_link: body.include_invoice_link ?? true,
-      include_payment_link: body.include_payment_link ?? true,
-      is_active: body.is_active ?? true,
-    }, {
-      onConflict: 'user_id'
+      name,
+      reminders,
+      is_default: is_default || false,
     })
     .select()
     .single();
@@ -310,174 +348,143 @@ async function saveReminderSettings(request: NextRequest, userId: string) {
 
   return NextResponse.json({
     success: true,
-    settings: data
+    schedule: data,
+    message: 'Reminder schedule created',
   });
 }
 
 // ============================================================================
-// HELPER: SCHEDULE REMINDERS FOR AN INVOICE
+// PUT - CRON JOB - Process automated reminders
 // ============================================================================
 
-async function scheduleReminders(request: NextRequest, userId: string) {
-  const body = await request.json();
-  const { invoice_id } = body;
+export async function PUT(request: NextRequest) {
+  try {
+    const cronSecret = request.headers.get('x-cron-secret');
+    if (cronSecret !== process.env.CRON_SECRET) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-  if (!invoice_id) {
-    return NextResponse.json({ error: 'Invoice ID required' }, { status: 400 });
-  }
+    const today = new Date();
+    const todayStr = format(today, 'yyyy-MM-dd');
 
-  // Get invoice
-  const { data: invoice, error: invoiceError } = await supabase
-    .from('invoices')
-    .select('*')
-    .eq('id', invoice_id)
-    .single();
+    // Get all pending/overdue invoices
+    const { data: invoices, error: invoiceError } = await supabase
+      .from('invoices')
+      .select(`
+        *,
+        reminder_schedule:reminder_schedules(reminders)
+      `)
+      .in('status', ['pending', 'overdue'])
+      .eq('reminders_enabled', true);
 
-  if (invoiceError || !invoice) {
-    return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
-  }
+    if (invoiceError) throw invoiceError;
 
-  // Get user's reminder settings
-  const { data: settings } = await supabase
-    .from('reminder_settings')
-    .select('*')
-    .eq('user_id', userId)
-    .single();
-
-  const reminderDays = settings?.reminder_days || [7, 3, 1, 0, -3, -7];
-  const dueDate = new Date(invoice.due_date);
-
-  // Create scheduled reminders
-  const reminders = reminderDays.map(days => {
-    const reminderDate = new Date(dueDate);
-    reminderDate.setDate(reminderDate.getDate() - days);
-
-    return {
-      invoice_id,
-      reminder_date: reminderDate.toISOString(),
-      reminder_type: days > 0 ? 'before_due' : days === 0 ? 'on_due' : 'overdue',
-      days_offset: days,
-      status: 'pending',
+    const results = {
+      processed: 0,
+      reminders_sent: 0,
+      errors: [] as string[],
     };
-  }).filter(r => new Date(r.reminder_date) > new Date()); // Only future reminders
 
-  if (reminders.length === 0) {
+    for (const invoice of invoices || []) {
+      try {
+        const dueDate = parseISO(invoice.due_date);
+        const daysDiff = differenceInDays(today, dueDate);
+
+        // Get reminder schedule (use default if none set)
+        const reminders = invoice.reminder_schedule?.reminders || DEFAULT_REMINDERS;
+
+        // Find applicable reminder
+        const applicableReminder = reminders.find((r: ReminderConfig) => 
+          r.enabled && r.days_offset === daysDiff
+        );
+
+        if (!applicableReminder) {
+          continue; // No reminder needed today
+        }
+
+        // Check if this reminder was already sent
+        const { data: alreadySent } = await supabase
+          .from('sent_reminders')
+          .select('id')
+          .eq('invoice_id', invoice.id)
+          .eq('reminder_type', `day_${daysDiff}`)
+          .single();
+
+        if (alreadySent) {
+          continue; // Already sent this reminder
+        }
+
+        // Send reminder
+        const subject = processTemplate(applicableReminder.subject_template, invoice);
+        const body = processTemplate(applicableReminder.body_template, invoice);
+
+        await supabase.from('email_queue').insert({
+          type: 'reminder',
+          recipient_email: invoice.to_email,
+          subject,
+          body,
+          invoice_id: invoice.id,
+          scheduled_for: new Date().toISOString(),
+          status: 'pending',
+        });
+
+        await supabase.from('sent_reminders').insert({
+          invoice_id: invoice.id,
+          reminder_type: `day_${daysDiff}`,
+          sent_at: new Date().toISOString(),
+          recipient_email: invoice.to_email,
+          status: 'sent',
+        });
+
+        results.reminders_sent++;
+
+        // Update invoice status to overdue if past due
+        if (daysDiff > 0 && invoice.status !== 'overdue') {
+          await supabase
+            .from('invoices')
+            .update({ status: 'overdue' })
+            .eq('id', invoice.id);
+        }
+
+      } catch (err: any) {
+        results.errors.push(`Invoice ${invoice.id}: ${err.message}`);
+      }
+
+      results.processed++;
+    }
+
     return NextResponse.json({
       success: true,
-      message: 'No future reminders to schedule',
-      scheduled: 0
+      message: `Processed ${results.processed} invoices, sent ${results.reminders_sent} reminders`,
+      results,
     });
+
+  } catch (error: any) {
+    console.error('Error processing reminders:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
-
-  const { data, error } = await supabase
-    .from('scheduled_reminders')
-    .insert(reminders)
-    .select();
-
-  if (error) throw error;
-
-  return NextResponse.json({
-    success: true,
-    scheduled: data?.length || 0,
-    reminders: data
-  });
 }
 
 // ============================================================================
-// HELPER: SEND A REMINDER (Called by CRON or manually)
+// TEMPLATE PROCESSING
 // ============================================================================
 
-async function sendReminder(request: NextRequest, userId: string) {
-  const body = await request.json();
-  const { reminder_id, invoice_id } = body;
-
-  // Get invoice details
-  const { data: invoice, error: invoiceError } = await supabase
-    .from('invoices')
-    .select('*')
-    .eq('id', invoice_id)
-    .single();
-
-  if (invoiceError || !invoice) {
-    return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
-  }
-
-  // Get user settings
-  const { data: settings } = await supabase
-    .from('reminder_settings')
-    .select('*')
-    .eq('user_id', userId)
-    .single();
-
-  const template = EMAIL_TEMPLATES[settings?.email_template || 'friendly'];
-  const dueDate = new Date(invoice.due_date);
-  const today = new Date();
-  const daysUntil = Math.ceil((dueDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-
-  let emailTemplate;
-  if (daysUntil > 0) {
-    emailTemplate = template.before;
-  } else if (daysUntil === 0) {
-    emailTemplate = template.on_due;
-  } else {
-    emailTemplate = template.overdue;
-  }
-
-  // Replace placeholders
-  const subject = replacePlaceholders(emailTemplate.subject, invoice, daysUntil);
-  const body_text = replacePlaceholders(emailTemplate.body, invoice, daysUntil);
-
-  // Send email (integrate with your email provider)
-  // For now, we'll simulate and log
-  console.log('Sending reminder email:', { to: invoice.to_email, subject });
-
-  // In production, integrate with SendGrid, Resend, etc:
-  // await sendEmail({ to: invoice.to_email, subject, body: body_text });
-
-  // Update reminder status
-  if (reminder_id) {
-    await supabase
-      .from('scheduled_reminders')
-      .update({ 
-        status: 'sent', 
-        sent_at: new Date().toISOString() 
-      })
-      .eq('id', reminder_id);
-  }
-
-  // Log the reminder
-  await supabase.from('reminder_log').insert({
-    invoice_id,
-    user_id: userId,
-    recipient_email: invoice.to_email,
-    subject,
-    status: 'sent',
-    sent_at: new Date().toISOString(),
-  });
-
-  return NextResponse.json({
-    success: true,
-    message: `Reminder sent to ${invoice.to_email}`
-  });
-}
-
-// ============================================================================
-// HELPER: REPLACE PLACEHOLDERS
-// ============================================================================
-
-function replacePlaceholders(text: string, invoice: any, daysUntil: number): string {
-  const paymentLink = `${process.env.NEXT_PUBLIC_APP_URL}/pay/${invoice.id}`;
+function processTemplate(template: string, invoice: any): string {
   const invoiceLink = `${process.env.NEXT_PUBLIC_APP_URL}/invoice/${invoice.id}`;
+  
+  return template
+    .replace(/\{\{invoice_number\}\}/g, invoice.invoice_number)
+    .replace(/\{\{client_name\}\}/g, invoice.to_name)
+    .replace(/\{\{total\}\}/g, formatCurrency(invoice.total, invoice.currency))
+    .replace(/\{\{due_date\}\}/g, format(parseISO(invoice.due_date), 'MMMM d, yyyy'))
+    .replace(/\{\{invoice_link\}\}/g, invoiceLink)
+    .replace(/\{\{from_name\}\}/g, invoice.from_name)
+    .replace(/\{\{from_email\}\}/g, invoice.from_email);
+}
 
-  return text
-    .replace(/{{invoice_number}}/g, invoice.invoice_number)
-    .replace(/{{client_name}}/g, invoice.to_name)
-    .replace(/{{total}}/g, `$${invoice.total.toFixed(2)}`)
-    .replace(/{{due_date}}/g, new Date(invoice.due_date).toLocaleDateString())
-    .replace(/{{from_name}}/g, invoice.from_name)
-    .replace(/{{from_email}}/g, invoice.from_email)
-    .replace(/{{days_until}}/g, Math.abs(daysUntil).toString())
-    .replace(/{{days_overdue}}/g, Math.abs(daysUntil).toString())
-    .replace(/{{payment_link}}/g, `Pay online: ${paymentLink}`)
-    .replace(/{{invoice_link}}/g, `View invoice: ${invoiceLink}`);
+function formatCurrency(amount: number, currency: string = 'USD'): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+  }).format(amount);
 }

@@ -3,9 +3,8 @@
 import { useState } from 'react'
 import {
   FileText, Plus, Send, Download, DollarSign, Users,
-  Clock, CheckCircle, AlertCircle, Settings, Search,
-  MoreVertical, Eye, Calendar, TrendingUp, RefreshCw,
-  CreditCard, BarChart3, Sparkles, Menu, X, ExternalLink
+  Clock, AlertCircle, Settings, Search, Eye, TrendingUp,
+  RefreshCw, CreditCard, BarChart3, Sparkles, Menu, X, ExternalLink
 } from 'lucide-react'
 
 import RecurringInvoiceManager from '@/components/RecurringInvoiceManager'
@@ -152,7 +151,7 @@ export default function InvoiceGeneratorPage() {
         </main>
       </div>
 
-      <CrossMarketingFooter currentApp="invoice-generator" />
+      <CrossMarketingFooter />
       <JavariWidget />
     </div>
   )

@@ -2,21 +2,28 @@
  * SEND PAYMENT RECEIPT EMAIL
  * Sends payment confirmation/receipt to customer
  * 
- * @version 1.0.0
+ * @version 1.0.1
  * @date December 27, 2025
+ * @fix Move Resend initialization inside handler to avoid build-time errors
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 export async function POST(request: NextRequest) {
+  // Initialize Resend inside the handler to avoid build-time errors
+  const resend = new Resend(process.env.RESEND_API_KEY);
+
   try {
     const { invoiceId, to, amount, invoiceNumber, businessName, currency = 'USD' } = await request.json();
 
     if (!to || !amount || !invoiceNumber) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
+    if (!process.env.RESEND_API_KEY) {
+      console.error('RESEND_API_KEY not configured');
+      return NextResponse.json({ error: 'Email service not configured' }, { status: 500 });
     }
 
     const currencySymbols: Record<string, string> = {

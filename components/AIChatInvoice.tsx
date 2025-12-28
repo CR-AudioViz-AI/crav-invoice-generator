@@ -31,8 +31,9 @@ interface Message {
 }
 
 interface AIChatInvoiceProps {
-  onCreateInvoice: (invoice: ParsedInvoice) => void
-  clients: Array<{ name: string; email: string }>
+  onCreateInvoice?: (invoice: ParsedInvoice) => void
+  onInvoiceGenerated?: (invoice: ParsedInvoice) => void
+  clients?: Array<{ name: string; email: string }>
   businessName: string
 }
 
@@ -44,7 +45,15 @@ const EXAMPLE_PROMPTS = [
   "Quick invoice: Sarah Jones, web development, $3500, due in 2 weeks"
 ]
 
-export default function AIChatInvoice({ onCreateInvoice, clients, businessName }: AIChatInvoiceProps) {
+export default function AIChatInvoice({ 
+  onCreateInvoice, 
+  onInvoiceGenerated,
+  clients = [], 
+  businessName 
+}: AIChatInvoiceProps) {
+  // Support both prop naming conventions
+  const handleCreateInvoice = onCreateInvoice ?? onInvoiceGenerated ?? ((invoice: ParsedInvoice) => console.log('Invoice created:', invoice))
+  
   const [isOpen, setIsOpen] = useState(false)
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -288,7 +297,7 @@ export default function AIChatInvoice({ onCreateInvoice, clients, businessName }
   }
 
   const handleUseInvoice = (parsedInvoice: ParsedInvoice) => {
-    onCreateInvoice(parsedInvoice)
+    handleCreateInvoice(parsedInvoice)
     setIsOpen(false)
     setMessages([messages[0]]) // Reset to initial message
   }

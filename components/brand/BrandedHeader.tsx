@@ -106,7 +106,8 @@ export function BrandedHeader({ appName, appLogo, quickLinks = [] }: BrandedHead
           <ThemeToggle />
           <AuthButtons 
             isLoggedIn={isLoggedIn} 
-            user={user} 
+            userName={user?.name || ''} 
+            userEmail={user?.email || ''} 
             onLogout={handleLogout} 
           />
           
@@ -145,3 +146,4 @@ export function BrandedHeader({ appName, appLogo, quickLinks = [] }: BrandedHead
     </header>
   );
 }
+

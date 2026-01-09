@@ -96,7 +96,13 @@ export function BrandedHeader({ appName, appLogo, quickLinks = [] }: BrandedHead
 
         {/* Right Side - Auth & Theme */}
         <div className="flex items-center gap-4">
-          {isLoggedIn && <CreditsBar credits={credits} plan={plan} />}
+          {isLoggedIn && (
+            <CreditsBar 
+              credits={credits} 
+              plan={plan} 
+              isLoggedIn={isLoggedIn} 
+            />
+          )}
           <ThemeToggle />
           <AuthButtons 
             isLoggedIn={isLoggedIn} 

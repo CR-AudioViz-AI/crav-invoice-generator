@@ -1,15 +1,18 @@
 /**
- * Supabase Compatibility Shim v2.0
- * ================================
- * This file provides FULL backward compatibility for apps that import from @/lib/supabase.
- * All database operations use the CENTRAL CR AudioViz AI Supabase instance.
+ * CR AudioViz AI - Invoice System Database Functions
+ * ====================================================
  * 
- * MIGRATION NOTE: Apps should eventually migrate to using central-services.ts API calls
- * instead of direct database access. This shim exists to prevent build failures.
+ * This file contains app-specific data functions for Javari Invoice.
+ * For authentication, credits, and central services, use:
  * 
- * @version 2.0.0
- * @standard Henderson Standard v1.1
+ *   import { CentralServices, CentralAuth, CentralCredits } from './central-services';
+ * 
+ * Auth, payments, and credits should ALWAYS go through central services.
  */
+
+// Re-export admin utilities from central services  
+export { isAdmin, shouldChargeCredits, ADMIN_EMAILS } from './central-services';
+
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 
